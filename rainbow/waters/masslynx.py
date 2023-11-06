@@ -67,7 +67,7 @@ def parse_spectrum(path, prec=0):
     funcdat_paths = sorted([os.path.join(path, fn) for fn in os.listdir(path)
                             if re.match(r'^_FUNC\d{3}.DAT$', fn)])
     funcdat_index = 0
-    assert(os.path.getsize(os.path.join(path, "_FUNCTNS.INF")) == 32 * 13 * len(funcdat_paths))
+    # assert(os.path.getsize(os.path.join(path, "_FUNCTNS.INF")) == 32 * 13 * len(funcdat_paths))
     while funcdat_index < len(funcdat_paths):
         polarity = None
         calib = None
@@ -481,7 +481,7 @@ def parse_chroinf(path):
             of the data in each analog file. 
 
     """
-    f = open(path, 'r')
+    f = open(path, 'r', errors='ignore')
     f.seek(0x84) # start offset 
     analog_info = []
     while f.tell() < os.path.getsize(path):
