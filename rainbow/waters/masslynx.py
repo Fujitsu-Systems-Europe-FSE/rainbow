@@ -107,7 +107,7 @@ def parse_function(path, prec=0, polarity=None, calib=None):
     #     and _FUNC .DAT data format from the _FUNC .IDX file.
     # A "pair" refers to a data pair of mz-intensity or wavelength-absorbance.
     times, pair_counts, bytes_per_pair = parse_funcidx(path[:-3] + 'IDX')
-    if bytes_per_pair not in {2, 6, 8}:
+    if bytes_per_pair not in {2, 4, 6, 8}:
         raise Exception("The {bytes_per_pair}-bytes format is not supported.")
 
     # Extract the ylabels and data values from the _FUNC .DAT file. 
