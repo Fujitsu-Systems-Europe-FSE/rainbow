@@ -33,7 +33,7 @@ class DataFile:
         if not isinstance(path, str) or \
            not detector in {'UV', 'MS', 'FID', 'CAD', 'ELSD', None} or \
            not isinstance(xlabels, np.ndarray) or xlabels.ndim != 1 or \
-           not isinstance(ylabels, np.ndarray) or ylabels.ndim != 1 or \
+           not isinstance(ylabels, np.ndarray) or ylabels.ndim != 2 or \
            not isinstance(data, np.ndarray) or data.ndim != 2 or \
            not isinstance(metadata, dict):
             raise Exception("Wrong argument parameters for DataFile.")

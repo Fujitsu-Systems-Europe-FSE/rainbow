@@ -53,7 +53,7 @@ def parse_spectrum(path, prec=0):
 
         # Parse mz calibration values from _HEADER.txt. 
         # There are a separate list of values for each MS spectrum. 
-        with open(os.path.join(path, '_HEADER.TXT'), 'r') as f:
+        with open(os.path.join(path, '_HEADER.TXT'), 'r', errors='ignore') as f:
             lines = f.read().splitlines()
         for line in lines:
             if not line.startswith("$$ Cal Function"):
@@ -110,6 +110,8 @@ def parse_function(path, prec=0, polarity=None, calib=None):
     if bytes_per_pair not in {2, 4, 6, 8}:
         raise Exception("The {bytes_per_pair}-bytes format is not supported.")
 
+    channels = parse_funccmp(path[:-3] + 'CMP')
+
     # Extract the ylabels and data values from the _FUNC .DAT file. 
     parse_funcdat = parse_funcdat2 
     if bytes_per_pair == 6:
@@ -120,9 +122,52 @@ def parse_function(path, prec=0, polarity=None, calib=None):
     
     # Spectra without an assigned polarity always contain UV data.
     detector = 'MS' if polarity else 'UV'
-    metadata = {'polarity': polarity} if polarity else {}
+    metadata = {}
+    if polarity:
+        metadata['polarity'] = polarity
+    if channels:
+        metadata['channels'] = channels
 
     return DataFile(path, detector, times, ylabels, data, metadata)
+
+def parse_funccmp(path):
+    """
+    Parses a Waters _FUNC .CMP file.
+
+    Learn more about this file format ...
+
+    Args:
+        path (str): Path to the _FUNC .CMP file.
+
+    Returns:
+        The molecule name
+
+    """
+
+    # Extract retention times and indexing info from the _FUNC .IDX file.
+    with open(path, 'rb') as f:
+        raw_bytes = f.read()
+    
+    # the compound name is at offset 12 and is 256 bytes long
+    offset = 12
+    nb_channels =(len(raw_bytes) - offset) // 1024
+    channels = []
+    for i in range(nb_channels):
+        compound = raw_bytes[offset:offset+256].decode(errors='ignore').replace('\x00', '')
+        offset += 256
+        mass_str = raw_bytes[offset:offset + 256].decode(errors='ignore').replace('\x00', '')
+        mass = mass_str if mass_str else None
+        offset += 256
+        formula = raw_bytes[offset:offset + 256].decode(errors='ignore').replace('\x00', '')
+        offset += 512
+        
+        channels.append({
+            'compound': compound,
+            'mass': mass,
+            'formula': formula
+        })
+    
+    return channels
 
 def parse_funcidx(path):
     """ 
@@ -184,8 +229,8 @@ def parse_funcdat2(path, pair_counts, prec=0, calib=None):
     inf_path = os.path.join(os.path.dirname(path), '_FUNCTNS.INF')
     func_index = int(re.findall(r"\d+", os.path.basename(path))[0]) - 1
     mzs = parse_funcinf(inf_path)[func_index]
-    ylabels = mzs[mzs != 0.0]
-
+    ylabels = mzs[mzs[:, 0] != 0.0]
+    
     # Extract the intensities from the _FUNC .DAT file. 
     with open(path, 'rb') as f:
         raw_bytes = f.read()
@@ -197,7 +242,7 @@ def parse_funcdat2(path, pair_counts, prec=0, calib=None):
 
     # Note: We have not come across a sample with more than 1 mz value. 
     # This may need to be reshaped differently in the future. 
-    data = values.reshape((pair_counts.size, ylabels.size))
+    data = values.reshape((pair_counts.size, ylabels.shape[0]))
 
     return ylabels, data
 
@@ -218,8 +263,18 @@ def parse_funcinf(path):
     """
     with open(path, 'rb') as f:
         raw_bytes = f.read()
+    
+    # Each Acquisition description is encoded on 416 bytes
     num_funcs = os.path.getsize(path) // 416
-    mzs = np.ndarray((num_funcs, 32), "<f", raw_bytes, 160, (416, 4))
+    
+    # The Q1 mass is the 40th float and Q3 mass is the 72th
+    mzs_q1 = np.ndarray((num_funcs, 32), "<f", raw_bytes, 40*4, (416, 4))
+    mzs_q3 = np.ndarray((num_funcs, 32), "<f", raw_bytes, 72*4, (416, 4))
+
+    mzs = np.zeros(shape=(mzs_q1.shape[0], mzs_q1.shape[1], 2))
+    mzs[:, :, 0] = mzs_q1
+    mzs[:, :, 1] = mzs_q3
+    
     return mzs
 
 def parse_funcdat6(path, pair_counts, prec=0, calib=None):
@@ -543,7 +598,7 @@ def parse_chrodat(path, name, units=None):
     elif "nm@" in name:
         detector = 'UV'
 
-    ylabels = np.array([''])
+    ylabels = np.array([['']])
     metadata = {'signal': name}
     if units: 
         metadata['unit'] = units 
@@ -572,7 +627,7 @@ def parse_metadata(path):
     metadata = {}
     metadata['vendor'] = "Waters"
 
-    with open(os.path.join(path, '_HEADER.TXT'), 'r') as f:
+    with open(os.path.join(path, '_HEADER.TXT'), 'r', errors='ignore') as f:
         lines = f.read().splitlines()
     for line in lines:
         if line.startswith("$$ Acquired Date"):

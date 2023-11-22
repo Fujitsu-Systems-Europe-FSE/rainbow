@@ -8,7 +8,7 @@ import numpy as np
 import lzf
 from lxml import etree
 from rainbow import DataFile
-
+import pandas as pd
 
 """
 MAIN PARSING METHOD 
@@ -43,7 +43,9 @@ def parse_allfiles(path, prec=0):
         if "MSProfile.bin" in acqdata_files:
             datafiles.append(parse_msdata(acqdata_path, prec))
         # Future work should also parse the MSPeak.bin format. 
-        # elif "MSPeak.bin" in acqdata_files:
+        elif "MSPeak.bin" in acqdata_files:
+            datafile = parse_mspeak(acqdata_path, prec)
+            datafiles.append(datafile)
         #     ...
 
     return datafiles
@@ -197,7 +199,148 @@ def parse_msdata(path, prec=0):
     f.close()
     
     return DataFile("MSProfile.bin", 'MS', times, mz_ylabels, data, {})
-   
+
+
+
+def parse_mspeak(path, prec=0):
+    """
+    Parses Masshunter MS data.
+
+    IMPORTANT: Masshunter MS data can be either stored in MSProfile.bin or \
+        MSPeak.bin. This method only supports parsing MSProfile.bin.
+
+    The following files are used (in order of listing):
+        - MSTS.xml -> Number of retention times.
+        - MSScan.xsd -> File structure of MSScan.bin.
+        - MSScan.bin -> Offsets and compression info for MSProfile.bin.
+        - MSMassCal.bin -> Calibration info for masses.
+        - MSProfile.bin -> Actual data values.
+
+    Learn more about this file format :ref:`here <hrms>`.
+
+    Args:
+        path (str): Path to the AcqData subdirectory.
+        prec (int, optional): Number of decimals to round mz values.
+
+    Returns:
+        DataFile containing Masshunter MS data.
+
+    """
+    # MSTS.xml: Extract number of retention times.
+    # In future work, this step could potentially be skipped by reading
+    #    MSScan.bin until EOF and counting the offsets.
+    # This would remove reliance on MSTS.xml being in the directory.
+    tree = etree.parse(os.path.join(path, "MSTS.xml"))
+    root = tree.getroot()
+    num_times = 0
+    for time_seg in root.findall("TimeSegment"):
+        num_times += int(time_seg.find("NumOfScans").text)
+
+    # MSScan.xsd: Extract the file structure of MSScan.bin.
+    # There are "simple" types can be directly translated into number types.
+    # But there are "complex" types that are made up of other
+    #     "simple" and "complex" types.
+    # These are stored in a dictionary to enable recursive parsing.
+    tree = etree.parse(os.path.join(path, "MSScan.xsd"))
+    root = tree.getroot()
+    namespace = tree.xpath('namespace-uri(.)')
+    complextypes_dict = {}
+    for complextype in root.findall(f"{{{namespace}}}complexType"):
+        innertypes = []
+        for element in complextype[0].findall(f"{{{namespace}}}element"):
+            innertypes.append((element.get('name'), element.get('type')))
+        complextypes_dict[complextype.get('name')] = innertypes
+
+    # MSScan.bin: Extract information about MSProfile.bin.
+    # For each retention time, this includes:
+    #   - the retention time itself
+    #   - starting offset of data in MSProfile.bin
+    #   - length in bytes of the compressed data
+    #   - length in bytes of the uncompressed data
+    #   - number of masses recorded at the retention time
+    # Future work could determine if the data blocks for each retention time
+    #     are always contiguous. If that is the case, the offset is unneeded.
+    f = open(os.path.join(path, "MSScan.bin"), 'rb')
+    f.seek(0x58)  # start offset
+    f.seek(struct.unpack('<I', f.read(4))[0])
+    scan_infos = []
+    data_info = np.empty(num_times, dtype=object)
+    for i in range(num_times):
+        # "ScanRecordType" is always the name of the root "complex" type.
+        scan_info = read_complextype(f, complextypes_dict, "ScanRecordType")
+        scan_infos.append(scan_info)
+        spectrum_info = scan_info['SpectrumParamValues']
+
+        data_info[i] = (
+            scan_info['ScanTime'],
+            spectrum_info['PointCount'],
+            spectrum_info['SpectrumOffset'],
+            spectrum_info['ByteCount']
+        )
+        scan_info.update(scan_info['SpectrumParamValues'])
+        del scan_info['SpectrumParamValues']
+    f.close()
+
+    scans = pd.DataFrame(scan_infos)
+    offsets = scans.SpectrumOffset.to_numpy()
+    offset_diff = offsets[1:] - offsets[:-1]
+    
+    # check that the data is stored continuously in the data flile
+    assert offset_diff.min() == offset_diff.max()
+    offset_zero = offsets[0]
+
+
+    # MSPeak.bin: Extract the data values.
+    # The raw bytes are decompressed using the `python-lzf` library.
+    # This code may be slow. We note that LZF decompression seems to not
+    #     rely on being decoded in smaller blocks as the code suggests.
+    #     Future work could potentially implement numpy speedups by
+    #     decompressing all the bytes at once and using clever indexing.
+    f = open(os.path.join(path, "MSPeak.bin"), 'rb')
+    twodoubles_unpack = struct.Struct('<d').unpack
+    times = np.empty(num_times)
+    num_mz_per_time = np.empty(num_times)
+    mz_list = []
+    intensity_bytearr = bytearray()
+    for i in range(num_times):
+        time, num_mz, offset, data_len = data_info[i]
+        times[i] = time
+        num_mz_per_time[i] = num_mz
+
+        # read the chunk
+        f.seek(offset)
+        data_bytes = f.read(comp_len)
+        intensity = struct.Struct('<d').unpack(data_bytes)
+
+
+        mz_list.extend(mzs.tolist())
+        intensity_bytearr.extend(decomp_view[16:])
+
+    # Process the extracted data values.
+    mz_arr = np.round(np.array(mz_list), prec)
+    intensities = np.ndarray(mz_arr.size, '<I', bytes(intensity_bytearr))
+
+    # Make the array of ylabels containing mz values.
+    mz_ylabels = np.unique(mz_arr)
+    mz_ylabels.sort()
+
+    # Fill the `data` array containing intensities.
+    # Optimized using numpy vectorization.
+    mz_indices = np.searchsorted(mz_ylabels, mz_arr)
+    data = np.zeros((num_times, mz_ylabels.size), dtype=np.uint64)
+    cur_index = 0
+    for i in range(num_times):
+        stop_index = cur_index + int(num_mz_per_time[i])
+        np.add.at(
+            data[i],
+            mz_indices[cur_index:stop_index],
+            intensities[cur_index:stop_index])
+        cur_index = stop_index
+
+    f.close()
+
+    return DataFile("MSPeak.bin", 'MS', times, mz_ylabels, data, {})
+
 def read_complextype(f, complextypes_dict, name):
     """ 
     Reads a "complex" type from :obj:`f`. Used only for MSScan.bin. 

@@ -475,12 +475,13 @@ def parse_ms(path, prec=0):
     # Determine the type of .ms file based on header.
     # Read the number of retention times from different offsets by type.
     type_ms = read_string(f, data_offsets['type'], 1)
-    if type_ms == "MSD Spectral File":
+    if True or type_ms == "MSD Spectral File":
         f.seek(data_offsets['lc_num_times'])
         num_times = int_unpack(f.read(4))[0]
     else: 
         f.seek(data_offsets['gc_num_times'])
-        num_times = struct.unpack('<I', f.read(4))[0]
+        buf = f.read(4)
+        num_times = struct.unpack('<I', buf)[0]
     
     # Go to the data start offset.
     f.seek(data_offsets['data_start'])
@@ -492,15 +493,19 @@ def parse_ms(path, prec=0):
     pair_counts = np.zeros(num_times, dtype=np.uint16)
     pair_bytearr = bytearray()
     for i in range(num_times):
-        f.read(2)
-        times[i] = int_unpack(f.read(4))[0]
-        f.read(6)
-        pair_counts[i] = short_unpack(f.read(2))[0]
-        f.read(4)
-        pair_bytes = f.read(pair_counts[i] * 4)
-        pair_bytearr.extend(pair_bytes)
-        f.read(10)
-    
+        try:
+            f.read(2)
+            times[i] = int_unpack(f.read(4))[0]
+            f.read(6)
+            pair_counts[i] = short_unpack(f.read(2))[0]
+            f.read(4)
+            pair_bytes = f.read(pair_counts[i] * 4)
+            pair_bytearr.extend(pair_bytes)
+            f.read(10)
+        except:
+            num_times = i
+            break
+
     # Minor processing on the extracted data.
     raw_bytes = bytes(pair_bytearr)
     times = times / 60000
