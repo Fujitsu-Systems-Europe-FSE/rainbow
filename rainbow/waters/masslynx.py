@@ -260,7 +260,7 @@ def parse_funcdat4(path, pair_counts, prec=0, calib=None):
     Args:
         path (str): Path to the Waters _FUNC .DAT file.
         pair_counts (np.ndarray):
-            1D array with the number of data pairs at each retention time.
+            1D array with the number of data pairs at each retention time.x
         prec (int, optional): Number of decimals to round ylabels.
         calib (list, optional): Float calibration values of the spectrum.
 
@@ -276,7 +276,7 @@ def parse_funcdat4(path, pair_counts, prec=0, calib=None):
     inf_path = os.path.join(os.path.dirname(path), '_FUNCTNS.INF')
     func_index = int(re.findall("\d+", os.path.basename(path))[0]) - 1
     mzs = parse_funcinf(inf_path)[func_index]
-    ylabels = mzs[mzs != 0.0]
+    ylabels = mzs[mzs != 0.0].reshape(-1, mzs.shape[1])
 
     # Read most significant 4 bytes from each segment into `raw_values`.
     with open(path, 'rb') as f:
@@ -300,7 +300,7 @@ def parse_funcdat4(path, pair_counts, prec=0, calib=None):
 
     # Note: We have not come across a sample with more than 1 mz value.
     # This may need to be reshaped differently in the future.
-    data = values.reshape((pair_counts.size, ylabels.size))
+    data = values.reshape((pair_counts.size, ylabels.shape[0]))
 
     del val_bases, val_powers, raw_values, raw_bytes
 
